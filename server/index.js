@@ -114,6 +114,18 @@ app.get('/api/user/me', (req, res) => {
   }
 });
 
+// --- 4. The "Logout" Route ---
+app.post('/auth/logout', (req, res) => {
+  // We clear the cookie by its name 'token'
+  res.clearCookie('token', {
+    httpOnly: true,
+    secure: false, // Set to true in production (HTTPS)
+    sameSite: 'strict',
+  });
+  
+  // Send a success response
+  res.status(200).json({ message: 'Logged out successfully' });
+});
 
 // Start the server
 app.listen(PORT, () => {

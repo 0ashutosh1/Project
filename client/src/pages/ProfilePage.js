@@ -1,54 +1,68 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom'; // <-- 1. Import useNavigate
 
 const ProfilePage = () => {
-  // We'll store the user's data in 'state'
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const navigate = useNavigate(); // <-- 2. Initialize the hook
 
-  // This 'useEffect' hook runs once when the component first loads
   useEffect(() => {
-    
-    // Define the async function to fetch data
     const fetchUserData = async () => {
       try {
-        // --- THIS IS THE CRITICAL PART ---
-        // We're calling our backend's '/api/user/me' route
         const res = await fetch('http://localhost:5000/api/user/me', {
           method: 'GET',
-          // 'credentials: "include"' tells the browser to send cookies
-          // (like our 'token' cookie) with this request
           credentials: 'include' 
         });
-        // --- END CRITICAL PART ---
 
         if (!res.ok) {
-          // If the server response is not good (e.g., 401 Unauthorized)
           throw new Error('Not authorized. Please log in again.');
         }
 
         const data = await res.json();
-        setUser(data); // Save the user data { id, name, email }
+        setUser(data); 
         
       } catch (err) {
         console.error(err);
         setError(err.message);
+        // If we're not authorized, automatically redirect to login
+        navigate('/'); 
       } finally {
-        setLoading(false); // We're done loading
+        setLoading(false);
       }
     };
 
     fetchUserData();
-  }, []); // The empty array [] means this effect runs only once
+  }, [navigate]); // <-- 3. Add navigate as a dependency
 
-  // --- Render different content based on our state ---
-  
+  // --- 4. Create the new logout function ---
+  const handleLogout = async () => {
+    try {
+      const res = await fetch('http://localhost:5000/auth/logout', {
+        method: 'POST',
+        credentials: 'include' // Must send cookies to clear them
+      });
+
+      if (res.ok) {
+        // If logout was successful, redirect to login page
+        navigate('/');
+      } else {
+        throw new Error('Logout failed');
+      }
+    } catch (err) {
+      console.error(err);
+      alert('Failed to log out.');
+    }
+  };
+
+  // --- (Render logic) ---
   if (loading) {
     return <p>Loading your information...</p>;
   }
 
   if (error) {
-    return <p>Error: {error}</p>;
+    // We don't need to show an error, we'll just be redirected
+    return null;
   }
 
   if (user) {
@@ -57,12 +71,16 @@ const ProfilePage = () => {
         <h2>Welcome, {user.name}!</h2>
         <p>You are logged in with the email: {user.email}</p>
         <p>(This information came from your secure backend!)</p>
+        
+        {/* --- 5. Add the logout button --- */}
+        <button onClick={handleLogout}>
+          Logout
+        </button>
       </div>
     );
   }
 
-  // Fallback in case something unexpected happens
-  return <p>Something went wrong. Please try refreshing.</p>;
+  return null; // We'll be redirected if no user/error
 };
 
 export default ProfilePage;
