@@ -1,10 +1,11 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
-import './App.css'; // We'll add styles here later
+import './App.css';
 
-// Import our new pages
+// Import our pages
 import LoginPage from './pages/LoginPage';
 import ProfilePage from './pages/ProfilePage';
+import AdminPage from './pages/AdminPage'; // <-- 1. IMPORT THE NEW PAGE
 
 function App() {
   return (
@@ -14,13 +15,14 @@ function App() {
           <ul>
             <li><Link to="/">Home (Login)</Link></li>
             <li><Link to="/profile">Profile</Link></li>
+            {/* We'll add a conditional admin link on the profile page */}
           </ul>
         </nav>
 
-        {/* This is where the pages will be swapped out */}
         <Routes>
           <Route path="/" element={<LoginPage />} />
           <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/admin" element={<AdminPage />} /> {/* <-- 2. ADD THE NEW ROUTE */}
         </Routes>
       </div>
     </BrowserRouter>

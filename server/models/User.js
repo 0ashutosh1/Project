@@ -4,18 +4,26 @@ const userSchema = new mongoose.Schema({
   email: {
     type: String,
     required: true,
-    unique: true, // No two users can have the same email
+    unique: true,
     lowercase: true
   },
   name: {
     type: String
   },
-  // This object will store the unique IDs from Google, Facebook, etc.
+
+  // --- THIS IS THE NEW PART ---
+  role: {
+    type: String,
+    enum: ['user', 'admin'], // Restricts the value to 'user' or 'admin'
+    default: 'user'          // Automatically sets new users to 'user'
+  },
+  // --- END NEW PART ---
+
   providers: {
     googleId: {
       type: String,
-      sparse: true, // Allows multiple null values
-      unique: true  // but ensures any googleId value is unique
+      sparse: true,
+      unique: true
     },
     facebookId: {
       type: String,
@@ -24,7 +32,6 @@ const userSchema = new mongoose.Schema({
     }
   }
 }, {
-  // Automatically adds 'createdAt' and 'updatedAt' fields
   timestamps: true 
 });
 

@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom'; // <-- 1. Import useNavigate
+import { useNavigate, Link} from 'react-router-dom';
 
 const ProfilePage = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const navigate = useNavigate(); // <-- 2. Initialize the hook
+  const navigate = useNavigate();
 
   useEffect(() => {
     const fetchUserData = async () => {
@@ -25,7 +25,6 @@ const ProfilePage = () => {
       } catch (err) {
         console.error(err);
         setError(err.message);
-        // If we're not authorized, automatically redirect to login
         navigate('/'); 
       } finally {
         setLoading(false);
@@ -33,18 +32,17 @@ const ProfilePage = () => {
     };
 
     fetchUserData();
-  }, [navigate]); // <-- 3. Add navigate as a dependency
+  }, [navigate]);
 
-  // --- 4. Create the new logout function ---
   const handleLogout = async () => {
+    // ... (logout logic is the same)
     try {
       const res = await fetch('http://localhost:5000/auth/logout', {
         method: 'POST',
-        credentials: 'include' // Must send cookies to clear them
+        credentials: 'include'
       });
 
       if (res.ok) {
-        // If logout was successful, redirect to login page
         navigate('/');
       } else {
         throw new Error('Logout failed');
@@ -55,13 +53,11 @@ const ProfilePage = () => {
     }
   };
 
-  // --- (Render logic) ---
   if (loading) {
     return <p>Loading your information...</p>;
   }
 
   if (error) {
-    // We don't need to show an error, we'll just be redirected
     return null;
   }
 
@@ -70,17 +66,27 @@ const ProfilePage = () => {
       <div>
         <h2>Welcome, {user.name}!</h2>
         <p>You are logged in with the email: {user.email}</p>
-        <p>(This information came from your secure backend!)</p>
+        <p><strong>Your Role: {user.role}</strong></p>
+
+        {/* --- THIS IS THE NEW PART --- */}
+        {/* This is conditional rendering. The link will only
+            appear if 'user.role' is equal to 'admin' */}
+        {user.role === 'admin' && (
+          <div style={{ marginTop: '20px', padding: '10px', border: '2px solid blue' }}>
+            <h3>Admin Tools</h3>
+            <Link to="/admin">Go to Admin Dashboard</Link>
+          </div>
+        )}
+        {/* --- END NEW PART --- */}
         
-        {/* --- 5. Add the logout button --- */}
-        <button onClick={handleLogout}>
+        <button onClick={handleLogout} style={{ marginTop: '20px' }}>
           Logout
         </button>
       </div>
     );
   }
 
-  return null; // We'll be redirected if no user/error
+  return null;
 };
 
 export default ProfilePage;

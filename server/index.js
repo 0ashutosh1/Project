@@ -6,8 +6,10 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const passport = require('passport');
 const cookieParser = require('cookie-parser');
-const jwt = require('jsonwebtoken'); // <-- 1. Import jsonwebtoken
-require('./passportConfig'); // Import your passport config
+const jwt = require('jsonwebtoken');
+const { protect, admin } = require('./middleware/authMiddleware'); // <-- 1. ADD THIS
+const User = require('./models/User'); // <-- 2. ADD THIS
+require('./passportConfig');
 
 
 const app = express();
@@ -62,15 +64,15 @@ app.get('/auth/google/callback',
     const payload = {
       id: req.user.id,
       email: req.user.email,
-      name: req.user.name
+      name: req.user.name,
+      role: req.user.role // <-- ADD THIS LINE
     };
 
     // 2. Sign the token
-    // We need to add a JWT_SECRET to our .env file
     const token = jwt.sign(
       payload, 
       process.env.JWT_SECRET, 
-      { expiresIn: '1d' } // Token expires in 1 day
+      { expiresIn: '1d' }
     );
 
     // 3. Send the token as an httpOnly cookie
@@ -87,34 +89,36 @@ app.get('/auth/google/callback',
 );
 
 // --- 3. The "Me" (Check Auth) Route ---
-// A protected route to get the current user's info
-// We'll create a middleware for this later, but let's test it
-app.get('/api/user/me', (req, res) => {
-  try {
-    // 1. Get the token from the cookies
-    const token = req.cookies.token;
-    if (!token) {
-      return res.status(401).json({ message: 'No token provided' });
-    }
+// We add 'protect' as the second argument. It runs *before* the (req, res) function.
+app.get('/api/user/me', protect, (req, res) => {
+  // If the code reaches this point, 'protect' has already verified
+  // the token and added the user's data to 'req.user'.
 
-    // 2. Verify the token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // 3. 'decoded' is the payload we set: { id, email, name }
-    // Send the user info back to the client
-    res.status(200).json({
-      id: decoded.id,
-      email: decoded.email,
-      name: decoded.name
-    });
+  res.status(200).json({
+    id: req.user.id,
+    email: req.user.email,
+    name: req.user.name,
+    role: req.user.role
+  });
+});
+
+// --- 4. The "Admin-Only" Route ---
+// This route uses *both* middlewares. They run in order.
+// 1st: 'protect' checks for a valid login token.
+// 2nd: 'admin' checks if req.user.role === 'admin'.
+app.get('/api/admin/users', protect, admin, async (req, res) => {
+  try {
+    // If we get here, the user is a logged-in admin.
+    // Let's find all users in the database.
+    const users = await User.find({}); // {} means "find all"
+    res.status(200).json(users);
 
   } catch (err) {
-    // If token is invalid or expired
-    return res.status(401).json({ message: 'Invalid token' });
+    res.status(500).json({ message: 'Server Error' });
   }
 });
 
-// --- 4. The "Logout" Route ---
+// --- 5. The "Logout" Route ---
 app.post('/auth/logout', (req, res) => {
   // We clear the cookie by its name 'token'
   res.clearCookie('token', {
