@@ -5,7 +5,8 @@ import './App.css';
 // Import our pages
 import LoginPage from './pages/LoginPage';
 import ProfilePage from './pages/ProfilePage';
-import AdminPage from './pages/AdminPage'; // <-- 1. IMPORT THE NEW PAGE
+import AdminPage from './pages/AdminPage'; 
+import AuthCallbackPage from './pages/AuthCallbackPage';
 
 function App() {
   return (
@@ -23,6 +24,7 @@ function App() {
           <Route path="/" element={<LoginPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/admin" element={<AdminPage />} /> {/* <-- 2. ADD THE NEW ROUTE */}
+          <Route path="/auth/callback" element={<AuthCallbackPage />} /> {/* <-- 2. ADD THE ROUTE */}
         </Routes>
       </div>
     </BrowserRouter>

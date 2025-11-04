@@ -1,37 +1,29 @@
 const dotenv = require('dotenv');
-dotenv.config();
+dotenv.config(); // Must be at the very top
 
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
-const passport = require('passport');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
-const { protect, admin } = require('./middleware/authMiddleware'); // <-- 1. ADD THIS
-const User = require('./models/User');
 const csrf = require('csurf');
-require('./passportConfig');
+const axios = require('axios'); // <-- Our new http client
+const { protect, admin } = require('./middleware/authMiddleware');
+const User = require('./models/User');
 
+// --- Removed all passport imports ---
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 // --- Middlewares ---
-// Your React app will be on http://localhost:3000
-// 'credentials: true' allows the browser to send/receive cookies
 app.use(cors({
   origin: 'http://localhost:3000', 
   credentials: true 
 }));
 app.use(express.json());
-app.use(cookieParser()); // Use cookie-parser
-// --- 2. ADD THESE LINES ---
-// Initialize csurf protection.
-// 'cookie: true' tells csurf to store its secret in an httpOnly cookie.
-const csrfProtection = csrf({ cookie: true });
-app.use(csrfProtection);
-// --- END NEW LINES ---
-app.use(passport.initialize()); // Initialize passport
+app.use(cookieParser());
+// --- Removed passport.initialize() ---
 
 // --- MongoDB Connection ---
 mongoose.connect(process.env.MONGO_URI)
@@ -45,99 +37,131 @@ app.get('/api', (req, res) => {
 
 
 // ===================================
-// ===         AUTH ROUTES         ===
+// ===     MANUAL PKCE AUTH        ===
 // ===================================
+// This is our new endpoint to handle the PKCE flow
+// It is *not* protected by CSRF, which is safe because
+// an attacker cannot forge the 'code' and 'verifier'.
+app.post('/auth/google', async (req, res) => {
+  const { code, verifier } = req.body;
 
-// --- 1. The "Login" Route ---
-// This route starts the Google login process
-app.get('/auth/google',
-  passport.authenticate('google', { 
-    scope: ['profile', 'email'], // We want to get the user's profile and email
-    session: false // We're using JWTs, not sessions
-  })
-);
+  if (!code || !verifier) {
+    return res.status(400).json({ message: 'Code and verifier are required.' });
+  }
 
-// --- 2. The "Callback" Route ---
-// This is the URL Google redirects to after a successful login
-app.get('/auth/google/callback', 
-  passport.authenticate('google', { 
-    failureRedirect: 'http://localhost:3000/login?error=true', // Redirect to React login page on failure
-    session: false // Still no sessions
-  }), 
-  (req, res) => {
-    // --- User is authenticated! (req.user is populated by passport) ---
+  try {
+    // --- 1. Exchange the code for tokens ---
+    const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', null, {
+      params: {
+        client_id: process.env.GOOGLE_CLIENT_ID,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET,
+        code: code,
+        code_verifier: verifier,
+        grant_type: 'authorization_code',
+        redirect_uri: 'http://localhost:3000/auth/callback', // Must match client
+      },
+    });
 
-    // 1. Create the JWT payload
+    const { access_token, id_token } = tokenResponse.data;
+
+    // --- 2. Get user profile from the id_token ---
+    // The id_token is a JWT signed by Google. We can decode it.
+    const profile = jwt.decode(id_token);
+    if (!profile) {
+      return res.status(400).json({ message: 'Invalid ID token' });
+    }
+
+    // --- 3. Find or Create User ---
+    // This is the same logic we had in passportConfig.js
+    let user = await User.findOne({ 'providers.googleId': profile.sub }); // 'sub' is Google's unique ID
+
+    if (!user) {
+      // Create a new user if they don't exist
+      user = new User({
+        email: profile.email,
+        name: profile.name,
+        // 'role' will be set to 'user' by default from our schema
+        providers: {
+          googleId: profile.sub
+        }
+      });
+      await user.save();
+    }
+
+    // --- 4. Create *our* app's JWT (the session) ---
     const payload = {
-      id: req.user.id,
-      email: req.user.email,
-      name: req.user.name,
-      role: req.user.role // <-- ADD THIS LINE
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role
     };
 
-    // 2. Sign the token
     const token = jwt.sign(
       payload, 
       process.env.JWT_SECRET, 
       { expiresIn: '1d' }
     );
 
-    // 3. Send the token as an httpOnly cookie
+    // --- 5. Set the httpOnly cookie ---
     res.cookie('token', token, {
-      httpOnly: true, // Makes it inaccessible to client-side JS (prevents XSS)
-      secure: false, // Set to true if you're on HTTPS in production
-      sameSite: 'strict', // Helps prevent CSRF
-      maxAge: 24 * 60 * 60 * 1000 // 1 day (in milliseconds)
+      httpOnly: true,
+      secure: false, // Set to true if on HTTPS
+      sameSite: 'strict',
+      maxAge: 24 * 60 * 60 * 1000 // 1 day
     });
 
-    // 4. Redirect the user back to the React app's profile page
-    res.redirect('http://localhost:3000/profile');
+    // --- 6. Send success response ---
+    // The client will receive this and redirect to /profile
+    res.status(200).json({ message: 'Login successful' });
+
+  } catch (err) {
+    console.error('Error during Google auth:', err.response ? err.response.data : err.message);
+    res.status(500).json({ message: 'Authentication failed.' });
   }
-);
+});
+
+
+// ===================================
+// ===   CSRF & PROTECTED ROUTES   ===
+// ===================================
+// We initialize CSRF protection *after* our /auth/google route
+const csrfProtection = csrf({ cookie: true });
+app.use(csrfProtection);
 
 // --- 3. The "Me" (Check Auth) Route ---
-// We add 'protect' as the second argument. It runs *before* the (req, res) function.
+// This route is protected by 'protect' and 'csrfProtection'
 app.get('/api/user/me', protect, (req, res) => {
-  // If the code reaches this point, 'protect' has already verified
-  // the token and added the user's data to 'req.user'.
-
   res.status(200).json({
     id: req.user.id,
     email: req.user.email,
     name: req.user.name,
     role: req.user.role,
-    csrfToken: req.csrfToken()
+    csrfToken: req.csrfToken() // Send the CSRF token
   });
 });
 
 // --- 4. The "Admin-Only" Route ---
-// This route uses *both* middlewares. They run in order.
-// 1st: 'protect' checks for a valid login token.
-// 2nd: 'admin' checks if req.user.role === 'admin'.
+// Also protected by both
 app.get('/api/admin/users', protect, admin, async (req, res) => {
   try {
-    // If we get here, the user is a logged-in admin.
-    // Let's find all users in the database.
-    const users = await User.find({}); // {} means "find all"
+    const users = await User.find({});
     res.status(200).json(users);
-
   } catch (err) {
     res.status(500).json({ message: 'Server Error' });
   }
 });
 
 // --- 5. The "Logout" Route ---
-app.post('/auth/logout', (req, res) => {
-  // We clear the cookie by its name 'token'
+// Also protected by both
+app.post('/auth/logout', protect, (req, res) => {
   res.clearCookie('token', {
     httpOnly: true,
-    secure: false, // Set to true in production (HTTPS)
+    secure: false,
     sameSite: 'strict',
   });
-  
-  // Send a success response
   res.status(200).json({ message: 'Logged out successfully' });
 });
+
 
 // Start the server
 app.listen(PORT, () => {
