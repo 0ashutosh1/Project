@@ -31,14 +31,21 @@ async function generateCodeChallenge(v) {
 }
 
 // --- 4. State (for Login CSRF) ---
-// This is the new function we added
 export function generateState() {
   var array = new Uint32Array(28);
   window.crypto.getRandomValues(array);
   return Array.from(array, dec2hex).join('');
 }
 
-// --- 5. Main Export (for PKCE) ---
+// --- 5. Nonce (for Replay Attacks) ---
+// THIS IS THE NEW FUNCTION
+export function generateNonce() {
+  var array = new Uint32Array(28);
+  window.crypto.getRandomValues(array);
+  return Array.from(array, dec2hex).join('');
+}
+
+// --- 6. Main Export (for PKCE) ---
 export async function createPkceChallenge() {
   const v = generateCodeVerifier();
   const c = await generateCodeChallenge(v);

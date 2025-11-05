@@ -3,6 +3,7 @@ dotenv.config(); // Must be at the very top
 
 const express = require('express');
 const cors = require('cors');
+const morgan = require('morgan');
 const mongoose = require('mongoose');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
@@ -10,8 +11,8 @@ const csrf = require('csurf');
 const axios = require('axios'); // <-- Our new http client
 const { protect, admin } = require('./middleware/authMiddleware');
 const User = require('./models/User');
-
-// --- Removed all passport imports ---
+const rateLimit = require('express-rate-limit');
+const { body, validationResult } = require('express-validator');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -21,9 +22,27 @@ app.use(cors({
   origin: 'http://localhost:3000', 
   credentials: true 
 }));
+app.use(morgan('dev'));
 app.use(express.json());
 app.use(cookieParser());
 // --- Removed passport.initialize() ---
+
+// General rate limiter for most routes
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per window
+  message: 'Too many requests from this IP, please try again after 15 minutes',
+});
+
+// Stricter rate limiter for auth routes
+const authLimiter = rateLimit({
+  windowMs: 30 * 60 * 1000, // 30 minutes
+  max: 10, // Limit each IP to 10 auth-related requests per window
+  message: 'Too many authentication attempts, please try again after 30 minutes',
+});
+
+// Apply the general limiter to all routes starting with /api
+app.use('/api', apiLimiter);
 
 // --- MongoDB Connection ---
 mongoose.connect(process.env.MONGO_URI)
@@ -39,11 +58,23 @@ app.get('/api', (req, res) => {
 // ===================================
 // ===     MANUAL PKCE AUTH        ===
 // ===================================
-app.post('/auth/google', async (req, res) => {
-  const { code, verifier } = req.body;
+const googleAuthValidation = [
+  authLimiter,
+  body('code').notEmpty().isString().withMessage('Authorization code must be a non-empty string'),
+  body('verifier').notEmpty().isString().withMessage('PKCE verifier must be a non-empty string'),
+  body('nonce').notEmpty().isString().withMessage('Nonce must be a non-empty string') // <-- ADD THIS
+];
 
-  if (!code || !verifier) {
-    return res.status(400).json({ message: 'Code and verifier are required.' });
+app.post('/auth/google', googleAuthValidation, async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const { code, verifier, nonce } = req.body;
+
+  if (!code || !verifier || !nonce) { // <-- 2. Update check
+    return res.status(400).json({ message: 'Code, verifier, and nonce are required.' });
   }
 
   try {
@@ -67,7 +98,12 @@ app.post('/auth/google', async (req, res) => {
       return res.status(400).json({ message: 'Invalid ID token' });
     }
 
-    // --- 3. Find or Create User (Same as before) ---
+    // --- 3. VALIDATE NONCE (CRITICAL!) ---
+    if (profile.nonce !== nonce) {
+      return res.status(401).json({ message: 'Invalid nonce. Replay attack suspected.' });
+    }
+
+    // --- 4. Find or Create User (Same as before) ---
     let user = await User.findOne({ 'providers.googleId': profile.sub });
     if (!user) {
       user = new User({
@@ -78,7 +114,7 @@ app.post('/auth/google', async (req, res) => {
       await user.save();
     }
 
-    // --- 4. CREATE *TWO* JWTs (This is the new part) ---
+    // --- 5. CREATE *TWO* JWTs (This is the new part) ---
     const userPayload = {
       id: user.id,
       email: user.email,
@@ -100,7 +136,7 @@ app.post('/auth/google', async (req, res) => {
       { expiresIn: process.env.JWT_REFRESH_EXPIRATION }
     );
 
-    // --- 5. Set the REFRESH token as an httpOnly cookie ---
+    // --- 6. Set the REFRESH token as an httpOnly cookie ---
     // We rename the cookie to 'refreshToken'
     res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
@@ -109,7 +145,7 @@ app.post('/auth/google', async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days (must match token expiry)
     });
 
-    // --- 6. Send the ACCESS token in the JSON response ---
+    // --- 7. Send the ACCESS token in the JSON response ---
     res.status(200).json({ 
       message: 'Login successful',
       accessToken: accessToken // Send the access token to the client
@@ -146,7 +182,7 @@ app.get('/api/user/me', protect, (req, res) => {
 // ===================================
 // This route is protected by CSRF but not 'protect'
 // It does its own JWT verification.
-app.post('/auth/refresh', (req, res) => {
+app.post('/auth/refresh', authLimiter, (req, res) => {
   // 1. Get the refresh token from the httpOnly cookie
   const refreshToken = req.cookies.refreshToken;
 
@@ -202,7 +238,7 @@ app.get('/api/admin/users', protect, admin, async (req, res) => {
 });
 
 // --- 5. The "Logout" Route ---
-app.post('/auth/logout', protect, (req, res) => {
+app.post('/auth/logout', authLimiter, protect, (req, res) => {
   // --- UPDATE THIS LINE ---
   res.clearCookie('refreshToken', {
     httpOnly: true,

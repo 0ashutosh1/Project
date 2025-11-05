@@ -5,8 +5,11 @@ import './App.css';
 // Import our pages
 import LoginPage from './pages/LoginPage';
 import ProfilePage from './pages/ProfilePage';
-import AdminPage from './pages/AdminPage'; 
+import AdminPage from './pages/AdminPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
+
+// --- 1. Import the new component ---
+import ProtectedRoute from './components/ProtectedRoute'; 
 
 function App() {
   return (
@@ -16,15 +19,32 @@ function App() {
           <ul>
             <li><Link to="/">Home (Login)</Link></li>
             <li><Link to="/profile">Profile</Link></li>
-            {/* We'll add a conditional admin link on the profile page */}
+            {/* We'll make this link smarter later */}
           </ul>
         </nav>
 
         <Routes>
+          {/* Public Routes */}
           <Route path="/" element={<LoginPage />} />
-          <Route path="/profile" element={<ProfilePage />} />
-          <Route path="/admin" element={<AdminPage />} /> {/* <-- 2. ADD THE NEW ROUTE */}
-          <Route path="/auth/callback" element={<AuthCallbackPage />} /> {/* <-- 2. ADD THE ROUTE */}
+          <Route path="/auth/callback" element={<AuthCallbackPage />} />
+
+          {/* --- 2. Wrap your protected routes --- */}
+          <Route 
+            path="/profile" 
+            element={
+              <ProtectedRoute>
+                <ProfilePage />
+              </ProtectedRoute>
+            } 
+          />
+          <Route 
+            path="/admin" 
+            element={
+              <ProtectedRoute>
+                <AdminPage />
+              </ProtectedRoute>
+            } 
+          />
         </Routes>
       </div>
     </BrowserRouter>
