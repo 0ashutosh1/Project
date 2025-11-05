@@ -1,26 +1,18 @@
 import React, { useState, useEffect } from 'react';
+import useAxiosPrivate from '../hooks/useAxiosPrivate'; // <-- 1. Import hook
 
 const AdminPage = () => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const axiosPrivate = useAxiosPrivate(); // <-- 2. Initialize hook
 
   useEffect(() => {
     const fetchAllUsers = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/admin/users', {
-          method: 'GET',
-          credentials: 'include' // Must send the cookie
-        });
-
-        if (!res.ok) {
-          // If we get a 401 (Not Auth'd) or 403 (Not Admin), throw an error
-          const errorData = await res.json();
-          throw new Error(errorData.message || 'You do not have permission.');
-        }
-
-        const data = await res.json();
-        setUsers(data); // Save the array of users
+        // --- 3. Use axiosPrivate ---
+        const res = await axiosPrivate.get('/api/admin/users');
+        setUsers(res.data); // Data is on res.data with axios
 
       } catch (err) {
         console.error(err);
@@ -31,15 +23,14 @@ const AdminPage = () => {
     };
 
     fetchAllUsers();
-  }, []); // Runs once on page load
+  }, [axiosPrivate]); // <-- 4. Add dependency
 
-  // --- Render Logic ---
+  // --- Render Logic (Same as before) ---
   if (loading) {
     return <p>Loading Admin Dashboard...</p>;
   }
 
   if (error) {
-    // This will show "Not authorized as an admin" if a normal user gets here
     return <h2>Access Denied: {error}</h2>;
   }
 

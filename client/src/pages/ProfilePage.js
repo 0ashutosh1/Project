@@ -1,70 +1,85 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext'; // <-- 1. Get auth context
+import useAxiosPrivate from '../hooks/useAxiosPrivate'; // <-- 2. Get smart hook
 
 const ProfilePage = () => {
-  const [user, setUser] = useState(null);
+  // --- 3. Get global state and functions ---
+  const { user, setUser, setCsrfToken, csrfToken, logout } = useAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [csrfToken, setCsrfToken] = useState(''); // <-- 1. ADD NEW STATE
+  
   const navigate = useNavigate();
+  const axiosPrivate = useAxiosPrivate(); // <-- 4. Initialize the hook
 
   useEffect(() => {
+    // We'll use this to prevent a flicker on refresh
+    let isMounted = true; 
+
     const fetchUserData = async () => {
       try {
-        const res = await fetch('http://localhost:5000/api/user/me', {
-          method: 'GET',
-          credentials: 'include' 
-        });
+        // --- 5. Use the smart axios instance ---
+        const res = await axiosPrivate.get('/api/user/me');
 
-        if (!res.ok) {
-          throw new Error('Not authorized. Please log in again.');
+        if (isMounted) {
+          // --- 6. Save user and CSRF to global context ---
+          setUser(res.data); 
+          setCsrfToken(res.data.csrfToken);
         }
-
-        const data = await res.json();
-        setUser(data); 
-        setCsrfToken(data.csrfToken); // <-- 2. SAVE THE TOKEN FROM THE RESPONSE
         
       } catch (err) {
         console.error(err);
         setError(err.message);
+        logout(); // Log out if we can't get user data
         navigate('/'); 
       } finally {
-        setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
 
-    fetchUserData();
-  }, [navigate]);
+    // Fetch data only if we don't have a user in context yet
+    if (!user) {
+      fetchUserData();
+    } else {
+      setLoading(false);
+    }
+
+    // Cleanup function
+    return () => {
+      isMounted = false;
+    };
+  }, [user, setUser, setCsrfToken, logout, navigate, axiosPrivate]); // Dependencies
 
   const handleLogout = async () => {
     try {
-      const res = await fetch('http://localhost:5000/auth/logout', {
-        method: 'POST',
-        credentials: 'include',
-        // --- 3. ADD THE CSRF TOKEN AS A HEADER ---
-        headers: {
-          'CSRF-Token': csrfToken // Send the token in the 'CSRF-Token' header
+      // --- 7. Use axiosPrivate for logout ---
+      await axiosPrivate.post('/auth/logout', 
+        {}, // No data to send
+        { // Config
+          headers: {
+            'CSRF-Token': csrfToken // Send the CSRF token from context
+          }
         }
-        // --- END NEW PART ---
-      });
-
-      if (res.ok) {
-        navigate('/');
-      } else {
-        throw new Error('Logout failed');
-      }
+      );
+      
+      logout(); // Clear global state
+      navigate('/'); // Redirect to login
+      
     } catch (err) {
       console.error(err);
       alert('Failed to log out.');
     }
   };
 
+  // --- Render Logic ---
   if (loading) {
     return <p>Loading your information...</p>;
   }
 
   if (error) {
-    return null;
+    return <p>Error: {error}</p>;
   }
 
   if (user) {
@@ -74,16 +89,12 @@ const ProfilePage = () => {
         <p>You are logged in with the email: {user.email}</p>
         <p><strong>Your Role: {user.role}</strong></p>
 
-        {/* --- THIS IS THE NEW PART --- */}
-        {/* This is conditional rendering. The link will only
-            appear if 'user.role' is equal to 'admin' */}
         {user.role === 'admin' && (
           <div style={{ marginTop: '20px', padding: '10px', border: '2px solid blue' }}>
             <h3>Admin Tools</h3>
             <Link to="/admin">Go to Admin Dashboard</Link>
           </div>
         )}
-        {/* --- END NEW PART --- */}
         
         <button onClick={handleLogout} style={{ marginTop: '20px' }}>
           Logout
@@ -92,7 +103,7 @@ const ProfilePage = () => {
     );
   }
 
-  return null;
+  return <p>Please log in.</p>; // Fallback
 };
 
 export default ProfilePage;

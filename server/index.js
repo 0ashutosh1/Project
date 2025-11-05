@@ -39,9 +39,6 @@ app.get('/api', (req, res) => {
 // ===================================
 // ===     MANUAL PKCE AUTH        ===
 // ===================================
-// This is our new endpoint to handle the PKCE flow
-// It is *not* protected by CSRF, which is safe because
-// an attacker cannot forge the 'code' and 'verifier'.
 app.post('/auth/google', async (req, res) => {
   const { code, verifier } = req.body;
 
@@ -50,7 +47,7 @@ app.post('/auth/google', async (req, res) => {
   }
 
   try {
-    // --- 1. Exchange the code for tokens ---
+    // --- 1. Exchange the code for tokens (Same as before) ---
     const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', null, {
       params: {
         client_id: process.env.GOOGLE_CLIENT_ID,
@@ -58,61 +55,65 @@ app.post('/auth/google', async (req, res) => {
         code: code,
         code_verifier: verifier,
         grant_type: 'authorization_code',
-        redirect_uri: 'http://localhost:3000/auth/callback', // Must match client
+        redirect_uri: 'http://localhost:3000/auth/callback',
       },
     });
 
-    const { access_token, id_token } = tokenResponse.data;
+    const { id_token } = tokenResponse.data;
 
-    // --- 2. Get user profile from the id_token ---
-    // The id_token is a JWT signed by Google. We can decode it.
+    // --- 2. Get user profile (Same as before) ---
     const profile = jwt.decode(id_token);
     if (!profile) {
       return res.status(400).json({ message: 'Invalid ID token' });
     }
 
-    // --- 3. Find or Create User ---
-    // This is the same logic we had in passportConfig.js
-    let user = await User.findOne({ 'providers.googleId': profile.sub }); // 'sub' is Google's unique ID
-
+    // --- 3. Find or Create User (Same as before) ---
+    let user = await User.findOne({ 'providers.googleId': profile.sub });
     if (!user) {
-      // Create a new user if they don't exist
       user = new User({
         email: profile.email,
         name: profile.name,
-        // 'role' will be set to 'user' by default from our schema
-        providers: {
-          googleId: profile.sub
-        }
+        providers: { googleId: profile.sub }
       });
       await user.save();
     }
 
-    // --- 4. Create *our* app's JWT (the session) ---
-    const payload = {
+    // --- 4. CREATE *TWO* JWTs (This is the new part) ---
+    const userPayload = {
       id: user.id,
       email: user.email,
       name: user.name,
       role: user.role
     };
-
-    const token = jwt.sign(
-      payload, 
-      process.env.JWT_SECRET, 
-      { expiresIn: '1d' }
+    
+    // Create the Access Token (15 minutes)
+    const accessToken = jwt.sign(
+      userPayload, 
+      process.env.JWT_ACCESS_SECRET, 
+      { expiresIn: process.env.JWT_ACCESS_EXPIRATION }
     );
 
-    // --- 5. Set the httpOnly cookie ---
-    res.cookie('token', token, {
+    // Create the Refresh Token (7 days)
+    const refreshToken = jwt.sign(
+      userPayload, // You can have a simpler payload for the refresh token
+      process.env.JWT_REFRESH_SECRET, 
+      { expiresIn: process.env.JWT_REFRESH_EXPIRATION }
+    );
+
+    // --- 5. Set the REFRESH token as an httpOnly cookie ---
+    // We rename the cookie to 'refreshToken'
+    res.cookie('refreshToken', refreshToken, {
       httpOnly: true,
       secure: false, // Set to true if on HTTPS
       sameSite: 'strict',
-      maxAge: 24 * 60 * 60 * 1000 // 1 day
+      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days (must match token expiry)
     });
 
-    // --- 6. Send success response ---
-    // The client will receive this and redirect to /profile
-    res.status(200).json({ message: 'Login successful' });
+    // --- 6. Send the ACCESS token in the JSON response ---
+    res.status(200).json({ 
+      message: 'Login successful',
+      accessToken: accessToken // Send the access token to the client
+    });
 
   } catch (err) {
     console.error('Error during Google auth:', err.response ? err.response.data : err.message);
@@ -140,6 +141,55 @@ app.get('/api/user/me', protect, (req, res) => {
   });
 });
 
+// ===================================
+// ===     REFRESH TOKEN ROUTE     ===
+// ===================================
+// This route is protected by CSRF but not 'protect'
+// It does its own JWT verification.
+app.post('/auth/refresh', (req, res) => {
+  // 1. Get the refresh token from the httpOnly cookie
+  const refreshToken = req.cookies.refreshToken;
+
+  if (!refreshToken) {
+    return res.status(401).json({ message: 'No refresh token provided.' });
+  }
+
+  try {
+    // 2. Verify the refresh token
+    const decoded = jwt.verify(
+      refreshToken,
+      process.env.JWT_REFRESH_SECRET
+    );
+
+    // 3. The token is valid, so create a new *access* token
+    const userPayload = {
+      id: decoded.id,
+      email: decoded.email,
+      name: decoded.name,
+      role: decoded.role
+    };
+
+    const newAccessToken = jwt.sign(
+      userPayload,
+      process.env.JWT_ACCESS_SECRET,
+      { expiresIn: process.env.JWT_ACCESS_EXPIRATION }
+    );
+
+    // 4. Send the new access token (and a new CSRF token)
+    // The client will need a new CSRF token for its *next* request
+    res.status(200).json({
+      message: 'Access token refreshed',
+      accessToken: newAccessToken,
+      csrfToken: req.csrfToken() // Send a new CSRF token
+    });
+
+  } catch (err) {
+    // If the refresh token is invalid or expired
+    console.error('Error refreshing token:', err.message);
+    return res.status(403).json({ message: 'Invalid refresh token.' });
+  }
+});
+
 // --- 4. The "Admin-Only" Route ---
 // Also protected by both
 app.get('/api/admin/users', protect, admin, async (req, res) => {
@@ -152,9 +202,9 @@ app.get('/api/admin/users', protect, admin, async (req, res) => {
 });
 
 // --- 5. The "Logout" Route ---
-// Also protected by both
 app.post('/auth/logout', protect, (req, res) => {
-  res.clearCookie('token', {
+  // --- UPDATE THIS LINE ---
+  res.clearCookie('refreshToken', {
     httpOnly: true,
     secure: false,
     sameSite: 'strict',

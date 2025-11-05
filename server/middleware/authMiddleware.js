@@ -1,37 +1,45 @@
 const jwt = require('jsonwebtoken');
 
 // --- 1. Middleware to check if user is logged in ---
-// We're moving the logic from /api/user/me into its own middleware
-// so we can reuse it.
+// This middleware now looks for a Bearer Token in the Authorization header
 const protect = (req, res, next) => {
-  try {
-    const token = req.cookies.token;
-    if (!token) {
-      return res.status(401).json({ message: 'Not authorized, no token' });
+  let token;
+  const authHeader = req.headers.authorization;
+
+  // Check for the 'Authorization' header and that it's a 'Bearer' token
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      // 1. Get the token from the header (e.g., "Bearer <token>")
+      token = authHeader.split(' ')[1];
+
+      // 2. Verify the access token
+      const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+
+      // 3. Add the user payload to the request object
+      // We don't fetch from DB, we trust the token payload
+      req.user = decoded;
+      
+      // 4. Call the next function
+      next();
+
+    } catch (err) {
+      console.error('Token verification failed:', err.message);
+      return res.status(401).json({ message: 'Not authorized, token failed' });
     }
+  }
 
-    // Verify token
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // Add the user payload to the request object
-    req.user = decoded;
-    
-    // Call the next function in the stack
-    next(); 
-
-  } catch (err) {
-    return res.status(401).json({ message: 'Not authorized, token failed' });
+  if (!token) {
+    return res.status(401).json({ message: 'Not authorized, no token' });
   }
 };
 
 // --- 2. Middleware to check if user is an Admin ---
-// This middleware must run *after* the 'protect' middleware
+// (This function is unchanged)
 const admin = (req, res, next) => {
-  // We check the req.user object that the 'protect' middleware added
   if (req.user && req.user.role === 'admin') {
-    next(); // User is an admin, proceed
+    next();
   } else {
-    res.status(403).json({ message: 'Not authorized as an admin' }); // 403 Forbidden
+    res.status(403).json({ message: 'Not authorized as an admin' });
   }
 };
 

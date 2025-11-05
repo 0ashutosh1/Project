@@ -1,15 +1,16 @@
-// --- 1. Generates a random string for the 'code_verifier' ---
+// --- 1. Helper function ---
 function dec2hex(dec) {
   return ('0' + dec.toString(16)).substr(-2);
 }
 
+// --- 2. Code Verifier (for PKCE) ---
 function generateCodeVerifier() {
   var array = new Uint32Array(56 / 2);
   window.crypto.getRandomValues(array);
   return Array.from(array, dec2hex).join('');
 }
 
-// --- 2. Hashes the 'code_verifier' to create the 'code_challenge' ---
+// --- 3. Code Challenge (for PKCE) ---
 function sha256(plain) {
   const encoder = new TextEncoder();
   const data = encoder.encode(plain);
@@ -29,7 +30,15 @@ async function generateCodeChallenge(v) {
   return base64encoded;
 }
 
-// --- 3. Export the functions ---
+// --- 4. State (for Login CSRF) ---
+// This is the new function we added
+export function generateState() {
+  var array = new Uint32Array(28);
+  window.crypto.getRandomValues(array);
+  return Array.from(array, dec2hex).join('');
+}
+
+// --- 5. Main Export (for PKCE) ---
 export async function createPkceChallenge() {
   const v = generateCodeVerifier();
   const c = await generateCodeChallenge(v);
