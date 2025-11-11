@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { axiosPublic } from '../api/axios'; // <-- Import axiosPublic
+import useAxiosPrivate from '../hooks/useAxiosPrivate'; // <-- Import useAxiosPrivate
 import { 
   Container, 
   Paper, 
@@ -16,6 +17,7 @@ const AuthCallbackPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { login } = useAuth();
+  const axiosPrivate = useAxiosPrivate();
 
   useEffect(() => {
     const handleAuthCallback = async () => {
@@ -30,6 +32,7 @@ const AuthCallbackPage = () => {
         const verifier = localStorage.getItem('pkce_code_verifier');
         const savedState = sessionStorage.getItem('oauth_state');
         const savedNonce = sessionStorage.getItem('oauth_nonce');
+        const action = sessionStorage.getItem('oauth_action'); // 'login' or 'link'
 
         // --- 3. State validation (Always do this) ---
         if (!state || !savedState || state !== savedState) {
@@ -41,13 +44,37 @@ const AuthCallbackPage = () => {
         sessionStorage.removeItem('oauth_state');
         sessionStorage.removeItem('oauth_nonce');
         sessionStorage.removeItem('oauth_provider');
+        sessionStorage.removeItem('oauth_action');
 
         if (!code) {
           throw new Error('No authorization code provided.');
         }
 
         let res;
-        // --- 5. Call the correct backend route based on provider ---
+        
+        // Check if this is a linking action
+        if (action === 'link') {
+          // Call the link endpoint instead
+          if (provider === 'google') {
+            if (!verifier || !savedNonce) {
+              throw new Error('Missing PKCE verifier or nonce for Google linking.');
+            }
+            res = await axiosPrivate.post(`/api/user/link/${provider}`, {
+              code: code,
+              verifier: verifier,
+              nonce: savedNonce
+            });
+          } else {
+            res = await axiosPrivate.post(`/api/user/link/${provider}`, {
+              code: code
+            });
+          }
+          // Redirect to settings page after linking
+          navigate('/settings');
+          return;
+        }
+
+        // --- 5. Call the correct backend route based on provider (login flow) ---
         if (provider === 'google') {
           if (!verifier || !savedNonce) {
             throw new Error('Missing PKCE verifier or nonce for Google login.');
@@ -59,6 +86,10 @@ const AuthCallbackPage = () => {
           });
         } else if (provider === 'github') {
           res = await axiosPublic.post('/auth/github', {
+            code: code
+          });
+        } else if (provider === 'facebook') {
+          res = await axiosPublic.post('/auth/facebook', {
             code: code
           });
         } else {
@@ -87,6 +118,7 @@ const AuthCallbackPage = () => {
         sessionStorage.removeItem('oauth_state');
         sessionStorage.removeItem('oauth_nonce');
         sessionStorage.removeItem('oauth_provider');
+        sessionStorage.removeItem('oauth_action');
         sessionStorage.removeItem('preLoginLocation');
       }
     };
@@ -96,7 +128,7 @@ const AuthCallbackPage = () => {
       navigate(location.pathname + location.search + '&processed=true', { replace: true });
     }
 
-  }, [location, navigate, login]);
+  }, [location, navigate, login, axiosPrivate]);
 
   // --- Updated JSX with MUI styles ---
   if (error) {

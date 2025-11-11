@@ -10,6 +10,7 @@ import LoginPage from './pages/LoginPage';
 import ProfilePage from './pages/ProfilePage';
 import AdminPage from './pages/AdminPage';
 import AuthCallbackPage from './pages/AuthCallbackPage';
+import AccountSettingsPage from './pages/AccountSettingsPage';
 import ProtectedRoute from './components/ProtectedRoute';
 
 function App() {
@@ -58,6 +59,10 @@ function App() {
             <Route 
               path="/admin" 
               element={<ProtectedRoute><AdminPage /></ProtectedRoute>} 
+            />
+            <Route 
+              path="/settings" 
+              element={<ProtectedRoute><AccountSettingsPage /></ProtectedRoute>} 
             />
           </Routes>
         </Box>

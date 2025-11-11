@@ -13,6 +13,8 @@ const { protect, admin } = require('./middleware/authMiddleware');
 const User = require('./models/User');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
+const tokenBlacklist = require('./utils/tokenBlacklist');
+const auditLogger = require('./utils/auditLogger');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -83,6 +85,14 @@ app.post('/auth/google', googleAuthValidation, async (req, res) => {
     return res.status(400).json({ message: 'Code, verifier, and nonce are required.' });
   }
 
+  const correlationId = auditLogger.logAuth({
+    type: 'login_attempt',
+    provider: 'google',
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+    success: false
+  });
+
   try {
     // --- 1. Exchange the code for tokens (Same as before) ---
     const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', null, {
@@ -101,11 +111,28 @@ app.post('/auth/google', googleAuthValidation, async (req, res) => {
     // --- 2. Get user profile (Same as before) ---
     const profile = jwt.decode(id_token);
     if (!profile) {
+      auditLogger.logAuth({
+        correlationId,
+        type: 'login',
+        provider: 'google',
+        ip: req.ip,
+        userAgent: req.headers['user-agent'],
+        success: false,
+        errorMessage: 'Invalid ID token'
+      });
       return res.status(400).json({ message: 'Invalid ID token' });
     }
 
     // --- 3. VALIDATE NONCE (CRITICAL!) ---
     if (profile.nonce !== nonce) {
+      auditLogger.logSecurity({
+        correlationId,
+        type: 'replay_attack',
+        severity: 'high',
+        ip: req.ip,
+        userAgent: req.headers['user-agent'],
+        details: 'Nonce mismatch detected'
+      });
       return res.status(401).json({ message: 'Invalid nonce. Replay attack suspected.' });
     }
 
@@ -115,8 +142,27 @@ app.post('/auth/google', googleAuthValidation, async (req, res) => {
       user = new User({
         email: profile.email,
         name: profile.name,
-        providers: { googleId: profile.sub }
+        avatar: profile.picture || null,
+        providers: { googleId: profile.sub },
+        lastLogin: new Date()
       });
+      await user.save();
+      
+      auditLogger.logAuth({
+        correlationId,
+        type: 'register',
+        provider: 'google',
+        userId: user.id,
+        email: user.email,
+        ip: req.ip,
+        userAgent: req.headers['user-agent'],
+        success: true
+      });
+    } else {
+      // Update avatar and last login on returning user
+      user.avatar = profile.picture || user.avatar;
+      user.name = profile.name || user.name;
+      user.lastLogin = new Date();
       await user.save();
     }
 
@@ -151,6 +197,17 @@ app.post('/auth/google', googleAuthValidation, async (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days (must match token expiry)
     });
 
+    auditLogger.logAuth({
+      correlationId,
+      type: 'login',
+      provider: 'google',
+      userId: user.id,
+      email: user.email,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      success: true
+    });
+
     // --- 7. Send the ACCESS token in the JSON response ---
     res.status(200).json({ 
       message: 'Login successful',
@@ -159,6 +216,125 @@ app.post('/auth/google', googleAuthValidation, async (req, res) => {
 
   } catch (err) {
     console.error('Error during Google auth:', err.response ? err.response.data : err.message);
+    auditLogger.logAuth({
+      correlationId,
+      type: 'login',
+      provider: 'google',
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      success: false,
+      errorMessage: err.message
+    });
+    res.status(500).json({ message: 'Authentication failed.' });
+  }
+});
+
+// ===================================
+// ===      FACEBOOK AUTH          ===
+// ===================================
+const facebookAuthValidation = [
+  authLimiter,
+  body('code').notEmpty().isString().withMessage('Authorization code must be a non-empty string')
+];
+
+app.post('/auth/facebook', facebookAuthValidation, async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const { code } = req.body;
+
+  try {
+    // --- 1. Exchange the code for an access token ---
+    const tokenResponse = await axios.get('https://graph.facebook.com/v18.0/oauth/access_token', {
+      params: {
+        client_id: process.env.FACEBOOK_APP_ID,
+        client_secret: process.env.FACEBOOK_APP_SECRET,
+        code: code,
+        redirect_uri: 'http://localhost:3000/auth/callback',
+      }
+    });
+
+    const { access_token } = tokenResponse.data;
+    if (!access_token) {
+      return res.status(500).json({ message: 'Facebook auth failed: No token received.' });
+    }
+
+    // --- 2. Get the user's profile from Facebook ---
+    const userResponse = await axios.get('https://graph.facebook.com/me', {
+      params: {
+        fields: 'id,name,email,picture',
+        access_token: access_token
+      }
+    });
+
+    const profile = userResponse.data;
+
+    // --- 3. Check if email exists ---
+    if (!profile.email) {
+      return res.status(400).json({ 
+        message: 'Facebook login failed: Email permission not granted. Please allow email access.' 
+      });
+    }
+
+    // --- 4. Find or Create User ---
+    let user = await User.findOne({ 'providers.facebookId': profile.id });
+
+    if (!user) {
+      user = await User.findOne({ email: profile.email });
+
+      if (user) {
+        // Link Facebook to existing account
+        user.providers.facebookId = profile.id;
+        await user.save();
+      } else {
+        // Create new user
+        user = new User({
+          email: profile.email,
+          name: profile.name,
+          providers: {
+            facebookId: profile.id
+          }
+        });
+        await user.save();
+      }
+    }
+
+    // --- 5. Create JWTs ---
+    const userPayload = {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role
+    };
+    
+    const accessToken = jwt.sign(
+      userPayload, 
+      process.env.JWT_ACCESS_SECRET, 
+      { expiresIn: process.env.JWT_ACCESS_EXPIRATION }
+    );
+
+    const refreshToken = jwt.sign(
+      userPayload,
+      process.env.JWT_REFRESH_SECRET, 
+      { expiresIn: process.env.JWT_REFRESH_EXPIRATION }
+    );
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: false,
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000
+    });
+
+    res.status(200).json({ 
+      message: 'Login successful',
+      accessToken: accessToken
+    });
+
+  } catch (err) {
+    console.error('Error during Facebook auth:', err.response ? err.response.data : err.message);
     res.status(500).json({ message: 'Authentication failed.' });
   }
 });
@@ -361,15 +537,297 @@ app.get('/api/admin/users', protect, admin, async (req, res) => {
   }
 });
 
+// Admin route to view audit logs
+app.get('/api/admin/audit-logs', protect, admin, (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const logs = auditLogger.getRecentLogs(limit);
+    res.status(200).json({ logs, total: logs.length });
+  } catch (err) {
+    console.error('Error fetching audit logs:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Admin route to view metrics
+app.get('/api/admin/metrics', protect, admin, (req, res) => {
+  try {
+    const metrics = auditLogger.getMetrics();
+    const blacklistSize = tokenBlacklist.size();
+    res.status(200).json({ 
+      authMetrics: metrics,
+      blacklistedTokens: blacklistSize
+    });
+  } catch (err) {
+    console.error('Error fetching metrics:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // --- 5. The "Logout" Route ---
 app.post('/auth/logout', authLimiter, protect, (req, res) => {
-  // --- UPDATE THIS LINE ---
-  res.clearCookie('refreshToken', {
-    httpOnly: true,
-    secure: false,
-    sameSite: 'strict',
+  try {
+    // Blacklist the current access token
+    if (req.token) {
+      // Get token expiration time
+      const decoded = jwt.decode(req.token);
+      const expiresIn = (decoded.exp * 1000) - Date.now();
+      tokenBlacklist.add(req.token, expiresIn);
+    }
+
+    // Log the logout event
+    auditLogger.logAuth({
+      type: 'logout',
+      userId: req.user.id,
+      email: req.user.email,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      success: true
+    });
+
+    // Clear the refresh token cookie
+    res.clearCookie('refreshToken', {
+      httpOnly: true,
+      secure: false,
+      sameSite: 'strict',
+    });
+
+    res.status(200).json({ message: 'Logged out successfully' });
+  } catch (err) {
+    console.error('Logout error:', err.message);
+    res.status(500).json({ message: 'Logout failed' });
+  }
+});
+
+// ===================================
+// ===   ACCOUNT LINKING ROUTES    ===
+// ===================================
+
+// Get linked providers for current user
+app.get('/api/user/providers', protect, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const linkedProviders = {
+      google: !!user.providers.googleId,
+      github: !!user.providers.githubId,
+      facebook: !!user.providers.facebookId
+    };
+
+    res.status(200).json({ providers: linkedProviders });
+  } catch (err) {
+    console.error('Error fetching providers:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Link a provider to existing account
+app.post('/api/user/link/:provider', protect, async (req, res) => {
+  const { provider } = req.params;
+  const { code, verifier, nonce } = req.body;
+
+  if (!['google', 'github', 'facebook'].includes(provider)) {
+    return res.status(400).json({ message: 'Invalid provider' });
+  }
+
+  const correlationId = auditLogger.logAuth({
+    type: 'link_account_attempt',
+    provider,
+    userId: req.user.id,
+    email: req.user.email,
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+    success: false
   });
-  res.status(200).json({ message: 'Logged out successfully' });
+
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    let providerId;
+
+    // Handle different providers
+    if (provider === 'google') {
+      if (!code || !verifier || !nonce) {
+        return res.status(400).json({ message: 'Missing required parameters' });
+      }
+
+      const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', null, {
+        params: {
+          client_id: process.env.GOOGLE_CLIENT_ID,
+          client_secret: process.env.GOOGLE_CLIENT_SECRET,
+          code,
+          code_verifier: verifier,
+          grant_type: 'authorization_code',
+          redirect_uri: 'http://localhost:3000/auth/callback',
+        },
+      });
+
+      const { id_token } = tokenResponse.data;
+      const profile = jwt.decode(id_token);
+      
+      if (profile.nonce !== nonce) {
+        return res.status(401).json({ message: 'Invalid nonce' });
+      }
+
+      providerId = profile.sub;
+
+      // Check if this Google account is already linked to another user
+      const existingUser = await User.findOne({ 'providers.googleId': providerId });
+      if (existingUser && existingUser.id !== user.id) {
+        return res.status(400).json({ message: 'This Google account is already linked to another user' });
+      }
+
+      user.providers.googleId = providerId;
+
+    } else if (provider === 'github') {
+      const tokenResponse = await axios.post(
+        'https://github.com/login/oauth/access_token',
+        null,
+        {
+          params: {
+            client_id: process.env.GITHUB_CLIENT_ID,
+            client_secret: process.env.GITHUB_CLIENT_SECRET,
+            code,
+          },
+          headers: { 'Accept': 'application/json' }
+        }
+      );
+
+      const { access_token } = tokenResponse.data;
+      const userResponse = await axios.get('https://api.github.com/user', {
+        headers: { 'Authorization': `Bearer ${access_token}` }
+      });
+
+      providerId = userResponse.data.id;
+
+      const existingUser = await User.findOne({ 'providers.githubId': providerId });
+      if (existingUser && existingUser.id !== user.id) {
+        return res.status(400).json({ message: 'This GitHub account is already linked to another user' });
+      }
+
+      user.providers.githubId = providerId;
+
+    } else if (provider === 'facebook') {
+      const tokenResponse = await axios.get('https://graph.facebook.com/v18.0/oauth/access_token', {
+        params: {
+          client_id: process.env.FACEBOOK_APP_ID,
+          client_secret: process.env.FACEBOOK_APP_SECRET,
+          code,
+          redirect_uri: 'http://localhost:3000/auth/callback',
+        }
+      });
+
+      const { access_token } = tokenResponse.data;
+      const userResponse = await axios.get('https://graph.facebook.com/me', {
+        params: {
+          fields: 'id,name,email',
+          access_token
+        }
+      });
+
+      providerId = userResponse.data.id;
+
+      const existingUser = await User.findOne({ 'providers.facebookId': providerId });
+      if (existingUser && existingUser.id !== user.id) {
+        return res.status(400).json({ message: 'This Facebook account is already linked to another user' });
+      }
+
+      user.providers.facebookId = providerId;
+    }
+
+    await user.save();
+
+    auditLogger.logAuth({
+      correlationId,
+      type: 'link_account',
+      provider,
+      userId: user.id,
+      email: user.email,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      success: true
+    });
+
+    res.status(200).json({ message: `${provider} account linked successfully` });
+
+  } catch (err) {
+    console.error(`Error linking ${provider}:`, err.message);
+    auditLogger.logAuth({
+      correlationId,
+      type: 'link_account',
+      provider,
+      userId: req.user.id,
+      email: req.user.email,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      success: false,
+      errorMessage: err.message
+    });
+    res.status(500).json({ message: 'Account linking failed' });
+  }
+});
+
+// Unlink a provider from account
+app.delete('/api/user/unlink/:provider', protect, async (req, res) => {
+  const { provider } = req.params;
+
+  if (!['google', 'github', 'facebook'].includes(provider)) {
+    return res.status(400).json({ message: 'Invalid provider' });
+  }
+
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Count how many providers are linked
+    const linkedCount = [
+      user.providers.googleId,
+      user.providers.githubId,
+      user.providers.facebookId
+    ].filter(Boolean).length;
+
+    // Don't allow unlinking if it's the last provider
+    if (linkedCount <= 1) {
+      return res.status(400).json({ 
+        message: 'Cannot unlink the last authentication provider. Link another provider first.' 
+      });
+    }
+
+    // Unlink the provider
+    if (provider === 'google') {
+      user.providers.googleId = undefined;
+    } else if (provider === 'github') {
+      user.providers.githubId = undefined;
+    } else if (provider === 'facebook') {
+      user.providers.facebookId = undefined;
+    }
+
+    await user.save();
+
+    auditLogger.logAuth({
+      type: 'unlink_account',
+      provider,
+      userId: user.id,
+      email: user.email,
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+      success: true
+    });
+
+    res.status(200).json({ message: `${provider} account unlinked successfully` });
+
+  } catch (err) {
+    console.error(`Error unlinking ${provider}:`, err.message);
+    res.status(500).json({ message: 'Account unlinking failed' });
+  }
 });
 
 

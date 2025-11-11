@@ -10,6 +10,10 @@ const userSchema = new mongoose.Schema({
   name: {
     type: String
   },
+  avatar: {
+    type: String, // URL to avatar image
+    default: null
+  },
   role: {
     type: String,
     enum: ['user', 'admin'],
@@ -31,6 +35,10 @@ const userSchema = new mongoose.Schema({
       sparse: true,
       unique: true
     }
+  },
+  lastLogin: {
+    type: Date,
+    default: Date.now
   }
 }, {
   timestamps: true 

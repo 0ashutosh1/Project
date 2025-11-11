@@ -17,6 +17,7 @@ import {
 } from '@mui/material';
 import AdminPanelSettingsIcon from '@mui/icons-material/AdminPanelSettings';
 import LogoutIcon from '@mui/icons-material/Logout';
+import SettingsIcon from '@mui/icons-material/Settings';
 
 const ProfilePage = () => {
   const { user, setUser, setCsrfToken, csrfToken, logout } = useAuth();
@@ -105,11 +106,23 @@ const ProfilePage = () => {
         </CardContent>
         <CardActions sx={{ padding: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
           
+          {/* Account Settings Button */}
+          <Button
+            variant="outlined"
+            color="primary"
+            startIcon={<SettingsIcon />}
+            component={RouterLink}
+            to="/settings"
+            fullWidth
+          >
+            Account Settings
+          </Button>
+
           {/* Admin Tools Button */}
           {user.role === 'admin' && (
             <Button
               variant="outlined"
-              color="primary"
+              color="secondary"
               startIcon={<AdminPanelSettingsIcon />}
               component={RouterLink}
               to="/admin"

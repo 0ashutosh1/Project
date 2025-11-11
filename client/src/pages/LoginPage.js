@@ -14,6 +14,7 @@ import FacebookIcon from '@mui/icons-material/Facebook'; // <-- 1. IMPORT FB ICO
 const LoginPage = () => {
   const GOOGLE_CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID;
   const GITHUB_CLIENT_ID = process.env.REACT_APP_GITHUB_CLIENT_ID;
+  const FACEBOOK_APP_ID = process.env.REACT_APP_FACEBOOK_APP_ID;
   const REDIRECT_URI = 'http://localhost:3000/auth/callback';
 
   // --- 2. Google Login Handler (Unchanged) ---
@@ -66,7 +67,28 @@ const LoginPage = () => {
     }
   };
 
-  // --- 4. Update JSX to match the screenshot ---
+  // --- 4. Facebook Login Handler ---
+  const handleFacebookLogin = async () => {
+    try {
+      const state = generateState();
+      sessionStorage.setItem('oauth_state', state);
+      sessionStorage.setItem('oauth_provider', 'facebook');
+
+      const SCOPE = 'email public_profile';
+      const authUrl = `https://www.facebook.com/v18.0/dialog/oauth?` +
+        `client_id=${FACEBOOK_APP_ID}` +
+        `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+        `&scope=${encodeURIComponent(SCOPE)}` +
+        `&state=${state}` +
+        `&response_type=code`;
+      
+      window.location.href = authUrl;
+    } catch (err) {
+      console.error('Error during Facebook login', err);
+    }
+  };
+
+  // --- 5. Update JSX to match the screenshot ---
   return (
     <Container 
       component="main" 
@@ -134,17 +156,17 @@ const LoginPage = () => {
             Continue with GitHub
           </Button>
           
-          {/* 5. The "Sneaky Bastard" Button --- */}
+          {/* Facebook Button */}
           <Button
             fullWidth
             variant="contained"
             startIcon={<FacebookIcon />}
-            onClick={handleGoogleLogin} // <-- Notice: calls Google login!
+            onClick={handleFacebookLogin}
             sx={{
-              textTransform: 'uppercase', // Match screenshot
+              textTransform: 'uppercase',
               fontWeight: 600,
               padding: '10px',
-              backgroundColor: '#1877F2', // Facebook blue
+              backgroundColor: '#1877F2',
               '&:hover': {
                 backgroundColor: '#166eeb',
               }

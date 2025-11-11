@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const tokenBlacklist = require('../utils/tokenBlacklist');
 
 // --- 1. Middleware to check if user is logged in ---
 // This middleware now looks for a Bearer Token in the Authorization header
@@ -12,14 +13,20 @@ const protect = (req, res, next) => {
       // 1. Get the token from the header (e.g., "Bearer <token>")
       token = authHeader.split(' ')[1];
 
-      // 2. Verify the access token
+      // 2. Check if token is blacklisted
+      if (tokenBlacklist.isBlacklisted(token)) {
+        return res.status(401).json({ message: 'Token has been revoked' });
+      }
+
+      // 3. Verify the access token
       const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
 
-      // 3. Add the user payload to the request object
+      // 4. Add the user payload to the request object
       // We don't fetch from DB, we trust the token payload
       req.user = decoded;
+      req.token = token; // Store token for potential blacklisting
       
-      // 4. Call the next function
+      // 5. Call the next function
       next();
 
     } catch (err) {
